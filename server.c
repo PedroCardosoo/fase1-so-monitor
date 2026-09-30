@@ -15,22 +15,43 @@
 #define MON_CPU 1
 #define MON_MEM 2
 
-int clienteFD;
-pthread_mutex_t mutex_envio = PTHREAD_MUTEX_INITIALIZER;
-volatile int parar_monitores = 0;
-pthread_t monitores[MAX_MONITORES];
-int n_monitores = 0;
+typedef struct {
+    int fd;
+    pthread_mutex_t mutex_envio;
+    volatile int parar_monitores;
+    pthread_t monitores[MAX_MONITORES];
+    int n_monitores;
+} Cliente;
 
 typedef struct {
+    Cliente *cliente;
     int tipo;
     int intervalo;
 } ParamMonitor;
 
 
-void enviar(const char *msg) {
-    pthread_mutex_lock(&mutex_envio);
-    send(clienteFD, msg, strlen(msg), MSG_NOSIGNAL);
-    pthread_mutex_unlock(&mutex_envio);
+void enviar(Cliente *c, const char *msg) {
+    char buf[BUFFER_SIZE];
+    size_t len = strlen(msg);
+
+    if (len >= sizeof(buf))
+        len = sizeof(buf) - 1;
+    memcpy(buf, msg, len);
+    if (len == 0 || buf[len - 1] != '\n') {
+        if (len >= sizeof(buf) - 1)
+            len = sizeof(buf) - 2;
+        buf[len++] = '\n';
+    }
+
+    pthread_mutex_lock(&c->mutex_envio);
+    size_t enviado = 0;
+    while (enviado < len) {
+        ssize_t n = send(c->fd, buf + enviado, len - enviado, MSG_NOSIGNAL);
+        if (n <= 0)
+            break;
+        enviado += (size_t)n;
+    }
+    pthread_mutex_unlock(&c->mutex_envio);
 }
 
 int ler_cpu(unsigned long long *total, unsigned long long *idle) {

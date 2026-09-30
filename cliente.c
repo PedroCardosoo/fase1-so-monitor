@@ -41,21 +41,37 @@ void *thread_envio(void *arg) {
 void *thread_recepcao (void *arg) {
   int socketFD = *(int *)arg;
   char buffer[BUFFER_SIZE];
+  char linha[BUFFER_SIZE];
+  int linha_len = 0;
   int bytes_lidos;
 
-  while (1) {
-    memset(buffer, 0, BUFFER_SIZE);
-    bytes_lidos = recv(socketFD, buffer, BUFFER_SIZE - 1, 0);
+  while (!s->encerrar) {
+    bytes_lidos = recv(s->fd, buffer, sizeof(buffer), 0);
 
     if (bytes_lidos > 0) {
-      buffer[bytes_lidos] = '\0';
-      printf("%s\n", buffer);
-
-    } else if (bytes_lidos == 0) {
-        printf("\n [Info] Ligacao encerrada pelo servidor.\n");
-        break;
+      for (int i = 0; i < bytes_lidos; i++) {
+        if (buffer[i] == '\r')
+          continue;
+        if (buffer[i] == '\n') {
+          linha[linha_len] = '\0';
+          if (linha_len > 0)
+            printf("%s\n", linha);
+          linha_len = 0;
+        } else if (linha_len < BUFFER_SIZE - 1) {
+          linha[linha_len++] = buffer[i];
+        }
+      }
     } else {
-        perror("Erro ao receber dados");
+        if (linha_len > 0) {
+          linha[linha_len] = '\0';
+          printf("%s\n", linha);
+        }
+        if (!s->encerrar && bytes_lidos == 0)
+          printf("\n [Info] Ligacao encerrada pelo servidor.\n");
+        else if (!s->encerrar)
+          perror("Erro ao receber dados");
+        encerrar_sessao(s);
+        close(STDIN_FILENO);
         break;
     }
 
