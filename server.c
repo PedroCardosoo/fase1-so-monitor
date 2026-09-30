@@ -92,22 +92,23 @@ int ler_memoria(long *total_kb, long *disp_kb) {
 void *thread_monitor(void *arg) {
     ParamMonitor p = *(ParamMonitor *)arg;
     free(arg);
+    Cliente *c = p.cliente;
 
     char msg[BUFFER_SIZE];
     unsigned long long total_ant = 0, idle_ant = 0;
 
     if (p.tipo == MON_CPU) ler_cpu(&total_ant, &idle_ant);
 
-    while (!parar_monitores) {
-        for (int i = 0; i < p.intervalo && !parar_monitores; i++) sleep(1);
-        if (parar_monitores) break;
+    while (!c->parar_monitores) {
+        for (int i = 0; i < p.intervalo && !c->parar_monitores; i++) sleep(1);
+        if (c->parar_monitores) break;
 
         if (p.tipo == MON_CPU) {
             unsigned long long total, idle;
             if (ler_cpu(&total, &idle) == 0 && total > total_ant) {
                 double uso = 100.0 * (1.0 - (double)(idle - idle_ant) / (double)(total - total_ant));
                 snprintf(msg, sizeof(msg), "[CPU] Uso: %.1f%%", uso);
-                enviar(msg);
+                enviar(c, msg);
                 total_ant = total;
                 idle_ant = idle;
             }
@@ -117,30 +118,39 @@ void *thread_monitor(void *arg) {
                 double uso = 100.0 * (double)(total_kb - disp_kb) / (double)total_kb;
                 snprintf(msg, sizeof(msg), "[MEMORIA] Uso: %.1f%% (%ld MB de %ld MB)",
                          uso, (total_kb - disp_kb) / 1024, total_kb / 1024);
-                enviar(msg);
+                enviar(c, msg);
             }
         }
     }
     return NULL;
 }
 
-void iniciar_monitor(int tipo, int intervalo) {
+void iniciar_monitor(Cliente *c, int tipo, int intervalo) {
     if (intervalo <= 0) {
-        enviar("Intervalo invalido. Exemplo: CPU-5");
+        enviar(c, "Intervalo invalido. Exemplo: CPU-5");
         return;
     }
-    if (n_monitores >= MAX_MONITORES) {
-        enviar("Limite de monitores atingido. Use Quit para parar.");
+    if (c->n_monitores >= MAX_MONITORES) {
+        enviar(c, "Limite de monitores atingido. Use Quit para parar.");
         return;
     }
 
     ParamMonitor *p = malloc(sizeof(ParamMonitor));
+    if (p == NULL) {
+        enviar(c, "Sem memoria para iniciar o monitor.");
+        return;
+    }
+    p->cliente = c;
     p->tipo = tipo;
     p->intervalo = intervalo;
 
-    pthread_create(&monitores[n_monitores], NULL, thread_monitor, p);
-    n_monitores++;
-    enviar("Monitor iniciado.");
+    if (pthread_create(&c->monitores[c->n_monitores], NULL, thread_monitor, p) != 0) {
+        free(p);
+        enviar(c, "Falha ao criar a thread do monitor.");
+        return;
+    }
+    c->n_monitores++;
+    enviar(c, "Monitor iniciado.");
 }
 
 void parar_todos_monitores() {
