@@ -153,15 +153,66 @@ void iniciar_monitor(Cliente *c, int tipo, int intervalo) {
     enviar(c, "Monitor iniciado.");
 }
 
-void parar_todos_monitores() {
-    parar_monitores = 1;
-    for (int i = 0; i < n_monitores; i++) {
-        pthread_join(monitores[i], NULL);
+void parar_monitores(Cliente *c) {
+    c->parar_monitores = 1;
+    for (int i = 0; i < c->n_monitores; i++) {
+        pthread_join(c->monitores[i], NULL);
     }
-    n_monitores = 0;
-    parar_monitores = 0;
+    c->n_monitores = 0;
+    c->parar_monitores = 0;
 }
 
+
+void *thread_atendimento(void *arg) {
+    Cliente *cliente = arg;
+
+    printf("Cliente conectado.\n");
+
+    char hora[64];
+    struct tm hora_tm;
+    time_t agora = time(NULL);
+    localtime_r(&agora, &hora_tm);
+    strftime(hora, sizeof(hora), "%H:%M:%S", &hora_tm);
+
+    char msg1[BUFFER_SIZE];
+    snprintf(msg1, sizeof(msg1),
+             "%s: CONECTADO!!\n"
+             "=== MENU ===\n"
+             "CPU-<segundos>      monitora uso de CPU (ex: CPU-5)\n"
+             "memoria-<segundos>  monitora uso de memoria (ex: memoria-5)\n"
+             "Quit                para os monitores\n"
+             "Exit                encerra tudo e sai",
+             hora);
+    enviar(cliente, msg1);
+
+    char buffer[BUFFER_SIZE];
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        int n = recv(cliente->fd, buffer, BUFFER_SIZE - 1, 0);
+        if (n <= 0) break;
+
+        buffer[strcspn(buffer, "\r\n")] = 0;
+
+        if (strncasecmp(buffer, "CPU-", 4) == 0) {
+            iniciar_monitor(cliente, MON_CPU, atoi(buffer + 4));
+        } else if (strncasecmp(buffer, "memoria-", 8) == 0) {
+            iniciar_monitor(cliente, MON_MEM, atoi(buffer + 8));
+        } else if (strcasecmp(buffer, "Quit") == 0) {
+            parar_monitores(cliente);
+            enviar(cliente, "Monitores encerrados.");
+        } else if (strcasecmp(buffer, "Exit") == 0) {
+            enviar(cliente, "Encerrando...");
+            break;
+        } else {
+            enviar(cliente, "Comando invalido.");
+        }
+    }
+
+    parar_monitores(cliente);
+    close(cliente->fd);
+    pthread_mutex_destroy(&cliente->mutex_envio);
+    return NULL;
+}
 
 int main() {
     int socketFD;
@@ -184,61 +235,32 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    if (listen(socketFD, 3) < 0) {
+    if (listen(socketFD, 16) < 0) {
         perror("Erro no listen");
         exit(EXIT_FAILURE);
     }
 
     printf("Aguardando conexoes na porta %d...\n", PORT);
 
-    int addrlen = sizeof(address);
-    if ((clienteFD = accept(socketFD, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+    socklen_t addrlen = sizeof(address);
+    Cliente cliente;
+    memset(&cliente, 0, sizeof(cliente));
+    cliente.fd = accept(socketFD, (struct sockaddr *)&address, &addrlen);
+    if (cliente.fd < 0) {
         perror("Erro no accept");
         exit(EXIT_FAILURE);
     }
-    printf("Cliente conectado.\n");
+    pthread_mutex_init(&cliente.mutex_envio, NULL);
 
-    char hora[64];
-    time_t agora = time(NULL);
-    strftime(hora, sizeof(hora), "%H:%M:%S", localtime(&agora));
-
-    char msg1[BUFFER_SIZE];
-    snprintf(msg1, sizeof(msg1),
-             "%s: CONECTADO!!\n"
-             "=== MENU ===\n"
-             "CPU-<segundos>      monitora uso de CPU (ex: CPU-5)\n"
-             "memoria-<segundos>  monitora uso de memoria (ex: memoria-5)\n"
-             "Quit                para os monitores\n"
-             "Exit                encerra tudo e sai",
-             hora);
-    enviar(msg1);
-
-    char buffer[BUFFER_SIZE];
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int n = recv(clienteFD, buffer, BUFFER_SIZE - 1, 0);
-        if (n <= 0) break;
-
-        buffer[strcspn(buffer, "\r\n")] = 0;
-
-        if (strncasecmp(buffer, "CPU-", 4) == 0) {
-            iniciar_monitor(MON_CPU, atoi(buffer + 4));
-        } else if (strncasecmp(buffer, "memoria-", 8) == 0) {
-            iniciar_monitor(MON_MEM, atoi(buffer + 8));
-        } else if (strcasecmp(buffer, "Quit") == 0) {
-            parar_todos_monitores();
-            enviar("Monitores encerrados.");
-        } else if (strcasecmp(buffer, "Exit") == 0) {
-            enviar("Encerrando...");
-            break;
-        } else {
-            enviar("Comando invalido.");
-        }
+    pthread_t atendimento;
+    if (pthread_create(&atendimento, NULL, thread_atendimento, &cliente) != 0) {
+        perror("Erro ao criar thread de atendimento");
+        close(cliente.fd);
+        pthread_mutex_destroy(&cliente.mutex_envio);
+        exit(EXIT_FAILURE);
     }
+    pthread_join(atendimento, NULL);
 
-    parar_todos_monitores();
-    close(clienteFD);
     close(socketFD);
-    printf("Servidor encerrado.\n");
     return EXIT_SUCCESS;
 }

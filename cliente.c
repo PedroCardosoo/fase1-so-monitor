@@ -45,8 +45,8 @@ void *thread_recepcao (void *arg) {
   int linha_len = 0;
   int bytes_lidos;
 
-  while (!s->encerrar) {
-    bytes_lidos = recv(s->fd, buffer, sizeof(buffer), 0);
+  while (1) {
+    bytes_lidos = recv(socketFD, buffer, sizeof(buffer), 0);
 
     if (bytes_lidos > 0) {
       for (int i = 0; i < bytes_lidos; i++) {
@@ -61,17 +61,15 @@ void *thread_recepcao (void *arg) {
           linha[linha_len++] = buffer[i];
         }
       }
-    } else {
+    } else if (bytes_lidos == 0) {
         if (linha_len > 0) {
           linha[linha_len] = '\0';
           printf("%s\n", linha);
         }
-        if (!s->encerrar && bytes_lidos == 0)
-          printf("\n [Info] Ligacao encerrada pelo servidor.\n");
-        else if (!s->encerrar)
-          perror("Erro ao receber dados");
-        encerrar_sessao(s);
-        close(STDIN_FILENO);
+        printf("\n [Info] Ligacao encerrada pelo servidor.\n");
+        break;
+    } else {
+        perror("Erro ao receber dados");
         break;
     }
 
