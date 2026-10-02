@@ -163,10 +163,64 @@ void parar_monitores(Cliente *c) {
 }
 
 
+typedef struct NoCliente {
+    Cliente *cliente;
+    pthread_t thread;
+    struct NoCliente *prox;
+} NoCliente;
+
+static NoCliente *lista_clientes = NULL;
+static pthread_mutex_t mutex_lista = PTHREAD_MUTEX_INITIALIZER;
+static int n_clientes = 0;
+static int max_clientes = 0;
+
+void liberar_cliente(Cliente *c) {
+    parar_monitores(c);
+    close(c->fd);
+    pthread_mutex_destroy(&c->mutex_envio);
+    free(c);
+}
+
+void sair_da_lista(Cliente *c) {
+    pthread_mutex_lock(&mutex_lista);
+    NoCliente **p = &lista_clientes;
+    while (*p != NULL) {
+        if ((*p)->cliente == c) {
+            NoCliente *morto = *p;
+            *p = morto->prox;
+            free(morto);
+            n_clientes--;
+            break;
+        }
+        p = &(*p)->prox;
+    }
+    pthread_mutex_unlock(&mutex_lista);
+}
+
 void *thread_atendimento(void *arg) {
     Cliente *cliente = arg;
 
-    printf("Cliente conectado.\n");
+    pthread_mutex_lock(&mutex_lista);
+    if (n_clientes >= max_clientes) {
+        pthread_mutex_unlock(&mutex_lista);
+        enviar(cliente, "Limite de clientes atingido.");
+        liberar_cliente(cliente);
+        return NULL;
+    }
+    NoCliente *no = malloc(sizeof(*no));
+    if (no == NULL) {
+        pthread_mutex_unlock(&mutex_lista);
+        enviar(cliente, "Sem memoria para atender a conexao.");
+        liberar_cliente(cliente);
+        return NULL;
+    }
+    no->thread = pthread_self();
+    no->cliente = cliente;
+    no->prox = lista_clientes;
+    lista_clientes = no;
+    n_clientes++;
+    printf("Cliente conectado. Ativos: %d/%d\n", n_clientes, max_clientes);
+    pthread_mutex_unlock(&mutex_lista);
 
     char hora[64];
     struct tm hora_tm;
@@ -211,10 +265,22 @@ void *thread_atendimento(void *arg) {
     parar_monitores(cliente);
     close(cliente->fd);
     pthread_mutex_destroy(&cliente->mutex_envio);
+    sair_da_lista(cliente);
+    free(cliente);
     return NULL;
 }
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Uso: %s <max_clientes>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+    max_clientes = atoi(argv[1]);
+    if (max_clientes <= 0) {
+        fprintf(stderr, "max_clientes deve ser um inteiro positivo.\n");
+        return EXIT_FAILURE;
+    }
+
     int socketFD;
 
     if ((socketFD = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -240,27 +306,30 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Aguardando conexoes na porta %d...\n", PORT);
+    printf("Aguardando ate %d cliente(s) na porta %d...\n", max_clientes, PORT);
 
-    socklen_t addrlen = sizeof(address);
-    Cliente cliente;
-    memset(&cliente, 0, sizeof(cliente));
-    cliente.fd = accept(socketFD, (struct sockaddr *)&address, &addrlen);
-    if (cliente.fd < 0) {
-        perror("Erro no accept");
-        exit(EXIT_FAILURE);
+    while (1) {
+        socklen_t addrlen = sizeof(address);
+        int fd = accept(socketFD, (struct sockaddr *)&address, &addrlen);
+        if (fd < 0) {
+            perror("Erro no accept");
+            continue;
+        }
+        Cliente *cliente = calloc(1, sizeof(*cliente));
+        if (cliente == NULL) {
+            close(fd);
+            continue;
+        }
+        cliente->fd = fd;
+        pthread_mutex_init(&cliente->mutex_envio, NULL);
+        pthread_t atendimento;
+        if (pthread_create(&atendimento, NULL, thread_atendimento, cliente) != 0) {
+            perror("Erro ao criar thread de atendimento");
+            close(fd);
+            pthread_mutex_destroy(&cliente->mutex_envio);
+            free(cliente);
+            continue;
+        }
+        pthread_detach(atendimento);
     }
-    pthread_mutex_init(&cliente.mutex_envio, NULL);
-
-    pthread_t atendimento;
-    if (pthread_create(&atendimento, NULL, thread_atendimento, &cliente) != 0) {
-        perror("Erro ao criar thread de atendimento");
-        close(cliente.fd);
-        pthread_mutex_destroy(&cliente.mutex_envio);
-        exit(EXIT_FAILURE);
-    }
-    pthread_join(atendimento, NULL);
-
-    close(socketFD);
-    return EXIT_SUCCESS;
 }
