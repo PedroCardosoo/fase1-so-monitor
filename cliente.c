@@ -9,44 +9,57 @@
 
 #define BUFFER_SIZE 1024
 
+typedef struct {
+  int fd;
+  volatile int encerrar;
+} Sessao;
+
+void encerrar_sessao(Sessao *s) {
+  s->encerrar = 1;
+  shutdown(s->fd, SHUT_RDWR);
+}
 
 void *thread_envio(void *arg) {
-  int socketFD = *(int *)arg;
+  Sessao *s = arg;
   char buffer[BUFFER_SIZE];
 
-
-  while (1) {
+  while (!s->encerrar) {
     memset(buffer, 0, BUFFER_SIZE);
     if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
+      encerrar_sessao(s);
       break;
     }
+    if (s->encerrar)
+      break;
 
     buffer[strcspn(buffer, "\n")] = 0;
 
     if (strlen(buffer) > 0) {
-      if (send(socketFD, buffer, strlen(buffer), 0) <= 0) {
+      if (send(s->fd, buffer, strlen(buffer), MSG_NOSIGNAL) <= 0) {
         perror("Erro ao enviar mensagem");
+        encerrar_sessao(s);
         break;
       }
 
       if (strcasecmp(buffer, "Exit") == 0) {
+        encerrar_sessao(s);
         break;
       }
     }
   }
-  pthread_exit(NULL);
+  return NULL;
 }
 
 
 void *thread_recepcao (void *arg) {
-  int socketFD = *(int *)arg;
+  Sessao *s = arg;
   char buffer[BUFFER_SIZE];
   char linha[BUFFER_SIZE];
   int linha_len = 0;
   int bytes_lidos;
 
-  while (1) {
-    bytes_lidos = recv(socketFD, buffer, sizeof(buffer), 0);
+  while (!s->encerrar) {
+    bytes_lidos = recv(s->fd, buffer, sizeof(buffer), 0);
 
     if (bytes_lidos > 0) {
       for (int i = 0; i < bytes_lidos; i++) {
@@ -61,20 +74,21 @@ void *thread_recepcao (void *arg) {
           linha[linha_len++] = buffer[i];
         }
       }
-    } else if (bytes_lidos == 0) {
+    } else {
         if (linha_len > 0) {
           linha[linha_len] = '\0';
           printf("%s\n", linha);
         }
-        printf("\n [Info] Ligacao encerrada pelo servidor.\n");
-        break;
-    } else {
-        perror("Erro ao receber dados");
+        if (!s->encerrar && bytes_lidos == 0)
+          printf("\n [Info] Ligacao encerrada pelo servidor.\n");
+        else if (!s->encerrar)
+          perror("Erro ao receber dados");
+        encerrar_sessao(s);
         break;
     }
 
   }
-  exit(EXIT_SUCCESS);
+  return NULL;
 }
 
 
@@ -110,13 +124,28 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
+  Sessao sessao;
+  sessao.fd = socket_cliente;
+  sessao.encerrar = 0;
+
   pthread_t t_envio, t_recepcao;
 
-  pthread_create(&t_envio, NULL, thread_envio, &socket_cliente);
-  pthread_create(&t_recepcao, NULL, thread_recepcao, &socket_cliente);
+  int envio_ok = pthread_create(&t_envio, NULL, thread_envio, &sessao) == 0;
+  int recepcao_ok = envio_ok && pthread_create(&t_recepcao, NULL, thread_recepcao, &sessao) == 0;
+  if (!envio_ok || !recepcao_ok) {
+    perror("Erro ao criar threads");
+    encerrar_sessao(&sessao);
+    if (envio_ok) {
+      pthread_cancel(t_envio);
+      pthread_join(t_envio, NULL);
+    }
+    close(socket_cliente);
+    return EXIT_FAILURE;
+  }
 
-  pthread_join(t_envio, NULL);
   pthread_join(t_recepcao, NULL);
+  pthread_cancel(t_envio);
+  pthread_join(t_envio, NULL);
 
   close(socket_cliente);
   return EXIT_SUCCESS;
